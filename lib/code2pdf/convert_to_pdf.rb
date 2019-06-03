@@ -1,21 +1,23 @@
+require 'cgi'
+require 'shellwords'
+
 class ConvertToPDF
   PDF_OPTIONS = {
     page_size: 'A4'
-  }
+  }.freeze
 
-  def initialize(params={})
-    if !params.has_key?(:from) || params[:from].nil?
+  def initialize(params = {})
+    if !params.key?(:from) || params[:from].nil?
       raise ArgumentError.new 'where is the codebase you want to convert to PDF?'
     elsif !valid_directory?(params[:from])
       raise LoadError.new "#{params[:from]} not found"
-    elsif !params.has_key?(:to) || params[:to].nil?
+    elsif !params.key?(:to) || params[:to].nil?
       raise ArgumentError.new 'where should I save the generated pdf file?'
     else
-      @from, @to = params[:from], params[:to]
+      @from, @to, @except = params[:from], params[:to], params[:except].to_s
 
-      if params.has_key?(:except)
-        @except = params[:except]
-        raise LoadError.new "#{@except} is not a valid blacklist YAML file" unless valid_blacklist?
+      if File.exist?(@except) && invalid_blacklist?
+        raise LoadError.new "#{@except} is not a valid blacklist YAML file"
       end
 
       save
@@ -39,14 +41,14 @@ class ConvertToPDF
       html += add_space(30)
     end
 
-    @kit = PDFKit.new(html, page_size: 'A4')
+    @kit = PDFKit.new(html, page_size: 'A4',lowquality:'true')
     @kit
   end
 
   def syntax_highlight(file)
     file_type = File.extname(file.first)[1..-1]
     file_lexer = Rouge::Lexer.find(file_type)
-    return file.last unless file_lexer
+    return CGI.escapeHTML(file.last) unless file_lexer
 
     theme = Rouge::Themes::Base16.mode(:light)
     formatter = Rouge::Formatters::HTMLInline.new(theme)
@@ -54,11 +56,12 @@ class ConvertToPDF
     formatter.format(file_lexer.lex(file.last))
   end
 
-  def valid_blacklist?
-    return false if FileTest.directory?(@except) || !File.exists?(@except)
+  def invalid_blacklist?
+    return true if FileTest.directory?(@except)
 
     @blacklist = YAML.load_file(@except)
-    @blacklist.has_key?(:directories) && @blacklist.has_key?(:files)
+
+    !@blacklist.key?(:directories) || !@blacklist.key?(:files)
   end
 
   def in_directory_blacklist?(item_path)
@@ -72,11 +75,11 @@ class ConvertToPDF
   end
 
   def valid_directory?(dir)
-    File.exists?(dir) && FileTest.directory?(dir)
+    File.exist?(dir) && FileTest.directory?(dir)
   end
 
   def valid_file?(file)
-    File.exists?(file) && FileTest.file?(file)
+    File.exist?(file) && FileTest.file?(file)
   end
 
   def read_files(path = nil)
@@ -101,19 +104,17 @@ class ConvertToPDF
 
     content = ''
     File.open(file, 'r') do |f|
-      if %x(file #{file}) !~ /text/
-        content << "<color rgb='777777'>[binary]</color>"
+      if `file #{file.shellescape}` !~ /text/
+        content << '[binary]'
       else
-        f.each_line.with_index do |line_content, line_number|
-          content << line_content
-        end
+        f.each_line { |line_content| content << line_content }
       end
     end
     content
   end
 
   def prepare_line_breaks(content)
-    content.gsub(/\n/, '<br>')
+    content.encode("UTF-16be", :invalid=>:replace, :replace=>"?").encode('UTF-8').gsub(/\n/, '<br>')
   end
 
   def add_space(height)
